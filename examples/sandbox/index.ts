@@ -48,10 +48,16 @@ const keyring = new core.Keyring();
 
 const portisAppId = "ff763d3d-9e34-45a1-81d1-caa39b9c64f9";
 const mnemonic = "alcohol woman abuse must during monitor noble actual mixed trade anger aisle";
-const walletConnectOptions: WalletConnectProviderConfig = {
+const walletConnectV1Options: WalletConnectProviderConfig = {
   rpc: {
     1: "https://mainnet.infura.io/v3/d734c7eebcdf400185d7eb67322a7e57",
   },
+  version: 1,
+};
+
+const walletConnectV2Options: WalletConnectProviderConfig = {
+  projectId: "696d4c7a0471a7a6aafc1141bbe011c0",
+  version: 2,
 };
 
 const testPublicWalletXpubs = [
@@ -75,7 +81,8 @@ const kkemuAdapter = keepkeyTcp.TCPKeepKeyAdapter.useKeyring(keyring);
 const portisAdapter = portis.PortisAdapter.useKeyring(keyring, { portisAppId });
 const metaMaskAdapter = metaMask.MetaMaskAdapter.useKeyring(keyring);
 const tallyHoAdapter = tallyHo.TallyHoAdapter.useKeyring(keyring);
-const walletConnectAdapter = walletConnect.WalletConnectAdapter.useKeyring(keyring, walletConnectOptions);
+const walletConnectV1Adapter = walletConnect.WalletConnectAdapter.useKeyring(keyring, walletConnectV1Options);
+const walletConnectV2Adapter = walletConnect.WalletConnectAdapter.useKeyring(keyring, walletConnectV2Options);
 const xdefiAdapter = xdefi.XDEFIAdapter.useKeyring(keyring);
 const keplrAdapter = keplr.KeplrAdapter.useKeyring(keyring);
 const nativeAdapter = native.NativeAdapter.useKeyring(keyring);
@@ -106,7 +113,8 @@ const $portis = $("#portis");
 const $native = $("#native");
 const $metaMask = $("#metaMask");
 const $tallyHo = $("#tallyHo");
-const $walletConnect = $("#walletConnect");
+const $walletConnectV1 = $("#walletConnectV1");
+const $walletConnectV2 = $("#walletConnectV2");
 const $xdefi = $("#xdefi");
 const $keplr = $("#keplr");
 const $keyring = $("#keyring");
@@ -223,10 +231,23 @@ $tallyHo.on("click", async (e) => {
   }
 });
 
-$walletConnect.on("click", async (e) => {
+$walletConnectV1.on("click", async (e) => {
   e.preventDefault();
   try {
-    wallet = await walletConnectAdapter.pairDevice();
+    wallet = await walletConnectV1Adapter.pairDevice();
+    window["wallet"] = wallet;
+    let deviceID = "nothing";
+    deviceID = await wallet.getDeviceID();
+    $("#keyring select").val(deviceID);
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+$walletConnectV2.on("click", async (e) => {
+  e.preventDefault();
+  try {
+    wallet = await walletConnectV2Adapter.pairDevice();
     window["wallet"] = wallet;
     let deviceID = "nothing";
     deviceID = await wallet.getDeviceID();
@@ -337,9 +358,15 @@ async function deviceConnected(deviceId) {
   }
 
   try {
-    await walletConnectAdapter.initialize();
+    await walletConnectV1Adapter.initialize();
   } catch (e) {
-    console.error("Could not initialize WalletConnectAdapter", e);
+    console.error("Could not initialize WalletConnectV1Adapter", e);
+  }
+
+  try {
+    await walletConnectV2Adapter.initialize();
+  } catch (e) {
+    console.error("Could not initialize WalletConnectV2Adapter", e);
   }
 
   for (const deviceID of Object.keys(keyring.wallets)) {

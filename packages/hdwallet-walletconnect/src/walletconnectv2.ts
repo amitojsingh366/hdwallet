@@ -1,18 +1,24 @@
+/* eslint-disable no-console */
 import * as core from "@shapeshiftoss/hdwallet-core";
-import WalletConnectProvider from "@walletconnect/web3-provider";
+import SignClient from "@walletconnect/sign-client";
+import { getSdkError } from "@walletconnect/utils";
+import { Web3Modal } from "@web3modal/standalone";
 import isObject from "lodash/isObject";
 
+import { WalletConnectProviderConfigV2 } from "./adapter";
 import * as eth from "./ethereum";
+import { extractEip155AccountData } from "./utils";
 
 interface WCState {
   connected?: boolean;
   chainId: number;
   accounts: string[];
   address: string;
-  version?: 1;
+  topic?: string;
+  version?: 2;
 }
 
-export function isWalletConnect(wallet: core.HDWallet): wallet is WalletConnectHDWallet {
+export function isWalletConnect(wallet: core.HDWallet): wallet is WalletConnectV2HDWallet {
   return isObject(wallet) && (wallet as any)._isWalletConnect;
 }
 
@@ -28,11 +34,11 @@ export function isWalletConnect(wallet: core.HDWallet): wallet is WalletConnectH
  * 🚧 eth_sendRawTransaction
  * @see https://docs.walletconnect.com/
  */
-export class WalletConnectWalletInfo implements core.HDWalletInfo, core.ETHWalletInfo {
+export class WalletConnectV2WalletInfo implements core.HDWalletInfo, core.ETHWalletInfo {
   readonly _supportsETHInfo = true;
   readonly _supportsBTCInfo = false;
   public getVendor(): string {
-    return "WalletConnect V1";
+    return "WalletConnect V2";
   }
 
   public hasOnDevicePinEntry(): boolean {
@@ -111,7 +117,7 @@ export class WalletConnectWalletInfo implements core.HDWalletInfo, core.ETHWalle
   }
 }
 
-export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
+export class WalletConnectV2HDWallet implements core.HDWallet, core.ETHWallet {
   readonly _supportsETH = true;
   readonly _supportsETHInfo = true;
   readonly _supportsBTCInfo = false;
@@ -120,16 +126,25 @@ export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
   readonly _supportsEthSwitchChain = false;
   readonly _supportsAvalanche = false;
 
-  info: WalletConnectWalletInfo & core.HDWalletInfo;
-  provider: WalletConnectProvider;
+  info: WalletConnectV2WalletInfo & core.HDWalletInfo;
+  provider: SignClient;
+  providerConfig: WalletConnectProviderConfigV2;
+  web3Modal: Web3Modal;
   connected = false;
   chainId = -1;
   accounts: string[] = [];
   ethAddress = "";
+  version = 2;
+  topic: string | undefined = "";
 
-  constructor(provider: WalletConnectProvider) {
+  constructor(provider: SignClient, providerConfig: WalletConnectProviderConfigV2) {
     this.provider = provider;
-    this.info = new WalletConnectWalletInfo();
+    this.providerConfig = providerConfig;
+    this.web3Modal = new Web3Modal({
+      projectId: this.providerConfig.projectId,
+      themeMode: "light",
+    });
+    this.info = new WalletConnectV2WalletInfo();
   }
 
   async getFeatures(): Promise<Record<string, any>> {
@@ -141,7 +156,7 @@ export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
   }
 
   public getVendor(): string {
-    return "WalletConnect V1";
+    return "WalletConnect V2";
   }
 
   public async getModel(): Promise<string> {
@@ -154,33 +169,55 @@ export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
 
   public async initialize(): Promise<void> {
     /** Subscribe to EIP-1193 events */
-    this.provider.connector.on("session_update", async (error, payload) => {
-      if (error) {
-        throw error;
-      }
-
-      const { chainId, accounts } = payload.params[0];
-      this.onSessionUpdate(accounts, chainId);
+    this.provider.on("session_update", async ({ topic, params }) => {
+      console.log("session_update", topic);
+      console.log("session_update", params);
     });
 
-    /** Note that this event does not fire on page reload */
-    this.provider.connector.on("connect", (error, payload) => {
-      if (error) {
-        throw error;
-      }
+    // /** Note that this event does not fire on page reload */
+    // this.provider.on("connect", (error, payload) => {
+    //   if (error) {
+    //     throw error;
+    //   }
 
-      this.onConnect(payload);
-    });
+    //   this.onConnect(payload);
+    // });
 
-    this.provider.connector.on("disconnect", (error) => {
-      if (error) {
-        throw error;
-      }
-      this.onDisconnect();
-    });
+    // this.provider.on("disconnect", (error) => {
+    //   if (error) {
+    //     throw error;
+    //   }
+    //   this.onDisconnect();
+    // });
 
-    /** Display QR modal to connect */
-    await this.provider.enable();
+    // /** Display QR modal to connect */
+    // await this.provider.enable();
+
+    // Open QRCode modal if a URI was returned (i.e. we're not connecting an existing pairing).
+    const requiredNamespaces = {
+      eip155: {
+        methods: ["eth_sendTransaction", "eth_signTransaction", "eth_sign", "personal_sign", "eth_signTypedData"],
+        chains: ["eip155:1"],
+        events: ["chainChanged", "accountsChanged"],
+      },
+    };
+    const { uri, approval } = await this.provider.connect({ requiredNamespaces });
+
+    if (uri) {
+      // Create a flat array of all requested chains across namespaces.
+      const standaloneChains = Object.values(requiredNamespaces)
+        .map((namespace) => namespace.chains)
+        .flat();
+
+      this.web3Modal.openModal({ uri, standaloneChains });
+
+      const { namespaces, topic } = await approval();
+      console.log(namespaces);
+      const acc = extractEip155AccountData(namespaces.eip155.accounts[0]);
+      if (!acc) return;
+      this.setState({ topic, connected: true, accounts: [acc.address], address: acc.address, chainId: acc.chainId });
+      this.web3Modal.closeModal();
+    }
   }
 
   public hasOnDevicePinEntry(): boolean {
@@ -291,7 +328,7 @@ export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
   }
 
   public async disconnect(): Promise<void> {
-    await this.provider.disconnect();
+    if (this.topic) await this.provider.disconnect({ topic: this.topic, reason: getSdkError("USER_DISCONNECTED") });
   }
 
   public async ethSupportsNetwork(chainId = 1): Promise<boolean> {
@@ -370,36 +407,37 @@ export class WalletConnectHDWallet implements core.HDWallet, core.ETHWallet {
   }
 
   public async getFirmwareVersion(): Promise<string> {
-    return "WalletConnect";
+    return "WalletConnect V2";
   }
 
-  private onConnect(payload: any) {
-    const { accounts, chainId } = payload.params[0];
-    const [address] = accounts;
-    this.setState({ connected: true, chainId, accounts, address });
-  }
+  //   private onConnect(payload: any) {
+  //     const { accounts, chainId } = payload.params[0];
+  //     const [address] = accounts;
+  //     this.setState({ connected: true, chainId, accounts, address });
+  //   }
 
-  private onSessionUpdate(accounts: string[], chainId: number) {
-    const [address] = accounts;
-    this.setState({ accounts, address, chainId });
-  }
+  //   private onSessionUpdate(accounts: string[], chainId: number) {
+  //     const [address] = accounts;
+  //   }
 
-  /**
-   * onDisconnect
-   *
-   * Resets state.
-   */
-  private onDisconnect() {
-    this.setState({ connected: false, chainId: 1, accounts: [], address: "" });
-  }
+  //   /**
+  //    * onDisconnect
+  //    *
+  //    * Resets state.
+  //    */
+  //   private onDisconnect() {
+  //     this.setState({ connected: false, chainId: 1, accounts: [], address: "" });
+  //   }
 
   private setState(config: WCState) {
-    const { connected, chainId, accounts, address } = config;
+    const { connected, chainId, accounts, address, topic } = config;
     if (connected !== undefined) {
       this.connected = connected;
     }
+    this.topic = topic;
     this.chainId = chainId;
     this.accounts = accounts;
     this.ethAddress = address;
+    this.version = 2;
   }
 }
